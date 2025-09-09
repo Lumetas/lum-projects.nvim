@@ -1,9 +1,6 @@
 #+TITLE: Lum Projects Manager
 #+AUTHOR: Lumetas 
 #+DATE: <2025-09-09 Tue>
-
-* Lum Projects Manager
-
 A Neovim plugin for managing development projects with templates and build/run configurations.
 
 ** Features
