@@ -14,20 +14,100 @@ local config = {
 -- Глобальные переменные для хранения состояния
 local state = {
     win = nil,
-    buf = nil
+    buf = nil,
+    current_project = nil,
+    terminal_jobs = {}
 }
 
--- Setup функция
-function M.setup(user_config)
-    if user_config then
-        if user_config.projects_dir then
-            config.projects_dir = vim.fn.expand(user_config.projects_dir)
+
+-- Раскодирование специальных символов
+local function unescape_special_chars(str)
+    if not str then return "" end
+    return str:gsub("\\=", "="):gsub("\\n", "\n")
+end
+--
+-- Получение информации о проекте
+local function get_project_info(name)
+    local info = { 
+        name = name, 
+        description = "",
+        onOpen = {},
+        onClose = {}
+    }
+    
+    local desc_file = io.open(config.projects_dir .. "/" .. name .. "/.lumproject", "r")
+    if desc_file then
+        for line in desc_file:lines() do
+            if line:match("^description=") then
+                info.description = unescape_special_chars(line:sub(13))
+            elseif line:match("^run=") then
+                info.run = unescape_special_chars(line:sub(5))
+            elseif line:match("^build=") then
+                info.build = unescape_special_chars(line:sub(7))
+            elseif line:match("^runInTerm=") then
+                info.runInTerm = unescape_special_chars(line:sub(11))
+            elseif line:match("^buildInTerm=") then
+                info.buildInTerm = unescape_special_chars(line:sub(13))
+            elseif line:match("^autoCloseTerm=") then
+                info.autoCloseTerm = unescape_special_chars(line:sub(15))
+            elseif line:match("^onOpen=") then
+                local command = unescape_special_chars(line:sub(8))
+                if command and command ~= "" then
+                    table.insert(info.onOpen, command)
+                end
+            elseif line:match("^onClose=") then
+                local command = unescape_special_chars(line:sub(9))
+                if command and command ~= "" then
+                    table.insert(info.onClose, command)
+                end
+            end
         end
-        if user_config.templates_dir then
-            config.templates_dir = vim.fn.expand(user_config.templates_dir)
+        desc_file:close()
+    end
+    
+    -- Нормализация булевых значений
+    info.runInTerm = info.runInTerm == "true"
+    info.buildInTerm = info.buildInTerm == "true"
+    info.autoCloseTerm = info.autoCloseTerm == "true"
+    
+    return info
+end
+
+-- Получение имени проекта из пути
+local function get_project_name_from_path(path)
+    local projects_dir = vim.fn.fnamemodify(config.projects_dir, ':p')
+    local normalized_path = vim.fn.fnamemodify(path, ':p')
+    
+    if normalized_path:sub(1, #projects_dir) == projects_dir then
+        local relative_path = normalized_path:sub(#projects_dir + 1)
+        relative_path = relative_path:gsub('^[/\\]+', ''):gsub('[/\\]+$', '')
+        
+        local parts = {}
+        for part in relative_path:gmatch('[^/\\]+') do
+            table.insert(parts, part)
         end
-        if user_config.window then
-            config.window = vim.tbl_extend("force", config.window, user_config.window)
+        
+        if #parts > 0 then
+            return parts[1]
+        end
+    end
+    
+    return nil
+end
+
+-- Выполнение команд проекта
+local function execute_project_commands(project_name, command_type)
+    local info = get_project_info(project_name)
+    if not info[command_type] then return end
+    
+    local commands = info[command_type]
+    if type(commands) == "string" then
+        commands = {commands}
+    end
+    
+    for _, cmd in ipairs(commands) do
+        if cmd and cmd ~= "" then
+            pcall(vim.cmd, cmd)
         end
     end
 end
@@ -186,11 +266,6 @@ local function escape_special_chars(str)
     return str:gsub("=", "\\="):gsub("\n", "\\n")
 end
 
--- Раскодирование специальных символов
-local function unescape_special_chars(str)
-    if not str then return "" end
-    return str:gsub("\\=", "="):gsub("\\n", "\n")
-end
 
 -- Создание нового проекта
 local function create_project(name, template, description)
@@ -216,13 +291,13 @@ local function create_project(name, template, description)
     end
 
     -- Создаем файл с описанием
-    if description then
-        local desc_file = io.open(project_path .. "/.lumproject", "w")
-        if desc_file then
-            desc_file:write("name=" .. escape_special_chars(name) .. "\n")
+    local desc_file = io.open(project_path .. "/.lumproject", "w")
+    if desc_file then
+        desc_file:write("name=" .. escape_special_chars(name) .. "\n")
+        if description then
             desc_file:write("description=" .. escape_special_chars(description) .. "\n")
-            desc_file:close()
         end
+        desc_file:close()
     end
 
     return true
@@ -241,37 +316,6 @@ local function delete_project(name)
     end
 
     return true
-end
-
--- Получение информации о проекте
-local function get_project_info(name)
-    local info = { name = name, description = "" }
-    local desc_file = io.open(config.projects_dir .. "/" .. name .. "/.lumproject", "r")
-    if desc_file then
-        for line in desc_file:lines() do
-            if line:match("^description=") then
-                info.description = unescape_special_chars(line:sub(13))
-            end
-
-            if line:match("^run=") then
-                info.run = unescape_special_chars(line:sub(5))
-            end
-
-            if line:match("^build=") then
-                info.build = unescape_special_chars(line:sub(7))
-            end
-
-            if line:match("^runInTerm=") then
-                info.runInTerm = unescape_special_chars(line:sub(11))
-            end
-
-            if line:match("^buildInTerm=") then
-                info.buildInTerm = unescape_special_chars(line:sub(13))
-            end
-        end
-        desc_file:close()
-    end
-    return info
 end
 
 -- Функция для создания нового проекта через инпут
@@ -309,8 +353,7 @@ local function update_buffer_content()
     if not state.buf or not vim.api.nvim_buf_is_valid(state.buf) then return end
 
     local projects = get_projects()
-    local lines = {
-    }
+    local lines = {}
 
     for i, project in ipairs(projects) do
         local info = get_project_info(project)
@@ -320,6 +363,39 @@ local function update_buffer_content()
     vim.api.nvim_buf_set_option(state.buf, "modifiable", true)
     vim.api.nvim_buf_set_lines(state.buf, 0, -1, false, lines)
     vim.api.nvim_buf_set_option(state.buf, "modifiable", false)
+end
+
+-- Выполнение команды в терминале
+local function execute_in_terminal(command, auto_close)
+    local current_win = vim.api.nvim_get_current_win()
+    vim.cmd("botright vsplit")
+    local term_buf = vim.api.nvim_get_current_buf()
+    local term_win = vim.api.nvim_get_current_win()
+    
+    vim.cmd("terminal " .. command)
+    
+    if auto_close then
+        -- Ждем завершения процесса и закрываем терминал
+        vim.defer_fn(function()
+            if vim.api.nvim_buf_is_valid(term_buf) and vim.api.nvim_win_is_valid(term_win) then
+                local job_id = vim.b.terminal_job_id
+                if job_id then
+                    vim.fn.jobwait({job_id}, 30000) -- Ждем до 30 секунд
+                end
+                vim.api.nvim_win_close(term_win, true)
+                if vim.api.nvim_buf_is_valid(term_buf) then
+                    vim.api.nvim_buf_delete(term_buf, {force = true})
+                end
+            end
+        end, 100)
+    end
+    
+    vim.api.nvim_set_current_win(current_win)
+end
+
+-- Выполнение команды как команды Neovim
+local function execute_as_nvim_command(command)
+    pcall(vim.cmd, command)
 end
 
 -- Основное окно
@@ -360,38 +436,38 @@ function M.open_project_manager()
         { mode = "n", key = "<CR>", action = function()
             local line = vim.api.nvim_win_get_cursor(state.win)[1]
             local projects = get_projects()
-			local project = projects[line]
-			local project_path = config.projects_dir .. "/" .. project
-			vim.cmd("cd " .. vim.fn.fnameescape(project_path))
-			safe_close()
-			vim.notify("Opened project: " .. project, vim.log.levels.INFO)
+            local project = projects[line]
+            local project_path = config.projects_dir .. "/" .. project
+            vim.cmd("cd " .. vim.fn.fnameescape(project_path))
+            safe_close()
+            vim.notify("Opened project: " .. project, vim.log.levels.INFO)
         end },
         { mode = "n", key = "o", action = function()
             local line = vim.api.nvim_win_get_cursor(state.win)[1]
             local projects = get_projects()
-			local project = projects[line]
-			local project_path = config.projects_dir .. "/" .. project
-			vim.cmd("cd " .. vim.fn.fnameescape(project_path))
-			safe_close()
-			vim.notify("Opened project: " .. project, vim.log.levels.INFO)
+            local project = projects[line]
+            local project_path = config.projects_dir .. "/" .. project
+            vim.cmd("cd " .. vim.fn.fnameescape(project_path))
+            safe_close()
+            vim.notify("Opened project: " .. project, vim.log.levels.INFO)
         end },
         { mode = "n", key = "d", action = function()
             local line = vim.api.nvim_win_get_cursor(state.win)[1]
             local projects = get_projects()
-			local project = projects[line]
-			vim.ui.select({ "Yes", "No" }, {
-				prompt = "Delete project '" .. project .. "'?"
-			}, function(choice)
-				if choice == "Yes" then
-					local success, err = delete_project(project)
-					if success then
-						vim.notify("Project deleted: " .. project, vim.log.levels.INFO)
-						update_buffer_content()
-					else
-						vim.notify("Error: " .. err, vim.log.levels.ERROR)
-					end
-				end
-			end)
+            local project = projects[line]
+            vim.ui.select({ "Yes", "No" }, {
+                prompt = "Delete project '" .. project .. "'?"
+            }, function(choice)
+                if choice == "Yes" then
+                    local success, err = delete_project(project)
+                    if success then
+                        vim.notify("Project deleted: " .. project, vim.log.levels.INFO)
+                        update_buffer_content()
+                    else
+                        vim.notify("Error: " .. err, vim.log.levels.ERROR)
+                    end
+                end
+            end)
         end },
         { mode = "n", key = "a", action = function()
             prompt_create_project()
@@ -423,136 +499,21 @@ function M.open_project_manager()
     })
 end
 
+-- Получение имени текущего проекта
 local function get_project_name()
-    -- Получаем текущую директорию
-    local current_dir = vim.fn.getcwd()
-    local projects_dir = vim.fn.fnamemodify(config.projects_dir, ':p')
-
-    -- Нормализуем пути
-    current_dir = vim.fn.fnamemodify(current_dir, ':p')
-    projects_dir = vim.fn.fnamemodify(projects_dir, ':p')
-
-    -- Проверяем, что current_dir начинается с projects_dir
-    if current_dir:sub(1, #projects_dir) == projects_dir then
-        -- Получаем оставшуюся часть пути
-        local relative_path = current_dir:sub(#projects_dir + 1)
-        -- Убираем ведущие и завершающие слеши
-        relative_path = relative_path:gsub('^[/\\]+', ''):gsub('[/\\]+$', '')
-
-        local parts = {}
-        for part in relative_path:gmatch('[^/\\]+') do
-            table.insert(parts, part)
-        end
-
-        if #parts > 0 then
-            return parts[1]
-        end
-    end
-
-    return nil
+    return get_project_name_from_path(vim.fn.getcwd())
 end
 
-local function run_command_live(command)
-    -- Создаём новый буфер
-    local buf = vim.api.nvim_create_buf(false, true)
-    local ui = vim.api.nvim_list_uis()[1]
-    local width = math.min(80, ui.width - 20)
-    local height = math.min(20, ui.height - 10)
-
-    local win = vim.api.nvim_open_win(buf, true, {
-        relative = "editor",
-        width = width,
-        height = height,
-        col = math.floor((ui.width - width) / 2),
-        row = math.floor((ui.height - height) / 2),
-        style = "minimal",
-        border = "rounded",
-    })
-
-    -- Настройки буфера
-    vim.api.nvim_buf_set_name(buf, "LumProject Output")
-    vim.api.nvim_buf_set_option(buf, "filetype", "log")
-    vim.api.nvim_buf_set_option(buf, "buftype", "nofile")
-    vim.api.nvim_buf_set_option(buf, "bufhidden", "wipe")
-
-    -- Добавим переменную для отслеживания состояния
-    local is_window_valid = true
-
-    -- Функция для безопасного добавления текста
-    local function safe_add_lines(lines)
-        if not is_window_valid or not vim.api.nvim_buf_is_valid(buf) then
-            return
-        end
-
-        vim.schedule(function()
-            if vim.api.nvim_buf_is_valid(buf) and vim.api.nvim_win_is_valid(win) then
-                local current_lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
-                for _, line in ipairs(lines) do
-                    if line ~= "" then
-                        table.insert(current_lines, line)
-                    end
-                end
-                vim.api.nvim_buf_set_lines(buf, 0, -1, false, current_lines)
-                vim.api.nvim_win_set_cursor(win, { #current_lines, 0 })
-            end
-        end)
-    end
-
-    -- Запускаем команду асинхронно
-    local job_id
-    job_id = vim.fn.jobstart(command, {
-        stdout_buffered = false,
-        on_stdout = function(_, data, _)
-            if data then
-                safe_add_lines(data)
-            end
-        end,
-        on_exit = function(_, exit_code, _)
-            safe_add_lines({ "---", "Process exited with code: " .. exit_code })
-        end,
-    })
-
-    -- Закрытие окна по `q`
-    vim.api.nvim_buf_set_keymap(buf, "n", "q", "", {
-        callback = function()
-            is_window_valid = false
-            if job_id and vim.fn.jobstop(job_id) == 1 then
-                print("Command stopped")
-            end
-            if vim.api.nvim_win_is_valid(win) then
-                vim.api.nvim_win_close(win, true)
-            end
-            if vim.api.nvim_buf_is_valid(buf) then
-                vim.api.nvim_buf_delete(buf, { force = true })
-            end
-        end,
-        noremap = true,
-        silent = true,
-    })
-
-    -- Автоматическое закрытие при выходе из буфера
-    vim.api.nvim_create_autocmd("BufWipeout", {
-        buffer = buf,
-        callback = function()
-            is_window_valid = false
-            if job_id and vim.fn.jobstop(job_id) == 1 then
-                print("Command stopped")
-            end
-        end,
-    })
-end
-
+-- Запуск проекта
 function M.start_project()
     local name = get_project_name()
     if name ~= nil then
         local project_info = get_project_info(name)
         if project_info.run and type(project_info.run) == 'string' and project_info.run ~= "" then
-            if project_info.runInTerm and project_info.runInTerm == 'true' then
-                local current_win = vim.api.nvim_get_current_win()
-                vim.cmd("botright vsplit | terminal " .. vim.fn.fnameescape(project_info.run))
-                vim.api.nvim_set_current_win(current_win)
+            if project_info.runInTerm then
+                execute_in_terminal(project_info.run, project_info.autoCloseTerm)
             else
-                run_command_live(project_info.run)
+                execute_as_nvim_command(project_info.run)
             end
         else
             vim.notify("No run command configured for project: " .. name, vim.log.levels.WARN)
@@ -562,17 +523,16 @@ function M.start_project()
     end
 end
 
+-- Сборка проекта
 function M.build_project()
     local name = get_project_name()
     if name ~= nil then
         local project_info = get_project_info(name)
         if project_info.build and type(project_info.build) == 'string' and project_info.build ~= "" then
-            if project_info.buildInTerm and project_info.buildInTerm == 'true' then
-                local current_win = vim.api.nvim_get_current_win()
-                vim.cmd("botright vsplit | terminal " .. vim.fn.fnameescape(project_info.build))
-                vim.api.nvim_set_current_win(current_win)
+            if project_info.buildInTerm then
+                execute_in_terminal(project_info.build, project_info.autoCloseTerm)
             else
-                run_command_live(project_info.build)
+                execute_as_nvim_command(project_info.build)
             end
         else
             vim.notify("No build command configured for project: " .. name, vim.log.levels.WARN)
@@ -582,6 +542,7 @@ function M.build_project()
     end
 end
 
+-- Telescope интеграция
 function M.telescope_projects()
     local has_telescope, telescope = pcall(require, "telescope")
     if not has_telescope then
@@ -614,13 +575,35 @@ function M.telescope_projects()
 
             if info.run then
                 table.insert(lines, "Run command: " .. info.run)
-                table.insert(lines, "Run in terminal: " .. (info.runInTerm == "true" and "Yes" or "No"))
+                table.insert(lines, "Run in terminal: " .. (info.runInTerm and "Yes" or "No"))
+                if info.runInTerm then
+                    table.insert(lines, "Auto close terminal: " .. (info.autoCloseTerm and "Yes" or "No"))
+                end
                 table.insert(lines, "")
             end
 
             if info.build then
                 table.insert(lines, "Build command: " .. info.build)
-                table.insert(lines, "Build in terminal: " .. (info.buildInTerm == "true" and "Yes" or "No"))
+                table.insert(lines, "Build in terminal: " .. (info.buildInTerm and "Yes" or "No"))
+                if info.buildInTerm then
+                    table.insert(lines, "Auto close terminal: " .. (info.autoCloseTerm and "Yes" or "No"))
+                end
+                table.insert(lines, "")
+            end
+
+            if #info.onOpen > 0 then
+                table.insert(lines, "OnOpen commands:")
+                for _, cmd in ipairs(info.onOpen) do
+                    table.insert(lines, "  - " .. cmd)
+                end
+                table.insert(lines, "")
+            end
+
+            if #info.onClose > 0 then
+                table.insert(lines, "OnClose commands:")
+                for _, cmd in ipairs(info.onClose) do
+                    table.insert(lines, "  - " .. cmd)
+                end
             end
 
             vim.api.nvim_buf_set_lines(self.state.bufnr, 0, -1, false, lines)
@@ -695,7 +678,57 @@ function M.telescope_projects()
     }):find()
 end
 
--- Команда для вызова менеджера
+-- Обработка смены директории
+local function handle_directory_change(old_dir, new_dir)
+    local old_project = get_project_name_from_path(old_dir)
+    local new_project = get_project_name_from_path(new_dir)
+    
+    -- Если выходим из проекта
+    if old_project and old_project ~= new_project then
+        execute_project_commands(old_project, "onClose")
+        state.current_project = nil
+    end
+    
+    -- Если входим в новый проект
+    if new_project and new_project ~= old_project then
+        state.current_project = new_project
+        execute_project_commands(new_project, "onOpen")
+    end
+end
+
+
+-- Настройка отслеживания смены директории
+local function setup_directory_tracking()
+    local previous_cwd = vim.fn.getcwd()
+    
+    vim.api.nvim_create_autocmd("DirChanged", {
+        callback = function()
+            local new_cwd = vim.fn.getcwd()
+            if new_cwd ~= previous_cwd then
+                handle_directory_change(previous_cwd, new_cwd)
+                previous_cwd = new_cwd
+            end
+        end
+    })
+end
+-- Setup функция
+function M.setup(user_config)
+    if user_config then
+        if user_config.projects_dir then
+            config.projects_dir = vim.fn.expand(user_config.projects_dir)
+        end
+        if user_config.templates_dir then
+            config.templates_dir = vim.fn.expand(user_config.templates_dir)
+        end
+        if user_config.window then
+            config.window = vim.tbl_extend("force", config.window, user_config.window)
+        end
+    end
+    
+    -- Инициализация отслеживания смены директории
+    setup_directory_tracking()
+end
+-- Команды для вызова менеджера
 vim.api.nvim_create_user_command("LumProjectsShow", M.open_project_manager, {})
 vim.api.nvim_create_user_command("LumProjectsRun", M.start_project, {})
 vim.api.nvim_create_user_command("LumProjectsBuild", M.build_project, {})

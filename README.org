@@ -95,10 +95,14 @@ Create a =.lumproject= file in your project directory:
 #+BEGIN_SRC
 name=my-project
 description=A sample project
-run=npm start
-runInTerm=true
-build=npm run build
-buildInTerm=false
+run=npm start 
+runInTerm=true # execute in terminal(shell)
+build=windo !cat % 
+buildInTerm=false # execute neovim command
+onOpen=echo "hello world"
+onOpen=set ts=2
+onClose=set ts=4
+
 #+END_SRC
 
 *** Templates
