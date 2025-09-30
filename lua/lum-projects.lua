@@ -32,7 +32,8 @@ local function get_project_info(name)
         name = name, 
         description = "",
         onOpen = {},
-        onClose = {}
+        onClose = {},
+		keys = {}
     }
     
     local desc_file = io.open(config.projects_dir .. "/" .. name .. "/.lumproject", "r")
@@ -60,6 +61,12 @@ local function get_project_info(name)
                 if command and command ~= "" then
                     table.insert(info.onClose, command)
                 end
+			elseif line:match("^key=") then
+                local key_part = unescape_special_chars(line:sub(5))
+                local key, command = key_part:match("^([^=]+) :=(.+)$")
+                if key and command then
+				info.keys[key] = command
+                end
             end
         end
         desc_file:close()
@@ -72,6 +79,50 @@ local function get_project_info(name)
     
     return info
 end
+
+-- Глобальная таблица для хранения текущих keymaps
+local project_keymaps = {}
+
+-- Очистка всех проект-специфичных хоткеев
+local function clear_project_keymaps()
+    for _, map_info in pairs(project_keymaps) do
+        -- Правильное удаление keymap с указанием буфера
+        pcall(vim.keymap.del, map_info.mode, map_info.lhs, { buffer = map_info.buf })
+    end
+    project_keymaps = {}
+end
+
+-- Установка хоткеев для текущего проекта
+local function setup_project_keymaps(project_name)
+    clear_project_keymaps()
+    
+    local info = get_project_info(project_name)
+    if not info.keys then return end
+    
+    local current_buf = vim.api.nvim_get_current_buf()
+    
+    for key, command in pairs(info.keys) do
+        local mode = "n"
+        
+        -- Создаем keymap
+        local success = pcall(vim.keymap.set, mode, key, function()
+            vim.cmd(command)
+        end, { 
+            buffer = current_buf, -- только для текущего буфера
+            desc = "Project: " .. project_name 
+        })
+        
+        if success then
+            table.insert(project_keymaps, {
+                mode = mode,
+                lhs = key,
+                buf = current_buf,
+                rhs = command
+            })
+        end
+    end
+end
+
 
 -- Получение имени проекта из пути
 local function get_project_name_from_path(path)
@@ -687,12 +738,14 @@ local function handle_directory_change(old_dir, new_dir)
     if old_project and old_project ~= new_project then
         execute_project_commands(old_project, "onClose")
         state.current_project = nil
+		clear_project_keymaps()
     end
     
     -- Если входим в новый проект
     if new_project and new_project ~= old_project then
         state.current_project = new_project
         execute_project_commands(new_project, "onOpen")
+		setup_project_keymaps(new_project)
     end
 end
 

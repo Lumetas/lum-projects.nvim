@@ -102,6 +102,8 @@ buildInTerm=false # execute neovim command
 onOpen=echo "hello world"
 onOpen=set ts=2
 onClose=set ts=4
+key=<leader>bp := npm build # project-specific keymap
+key=<leader>br := npm run build
 
 #+END_SRC
 
