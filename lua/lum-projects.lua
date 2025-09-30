@@ -159,6 +159,7 @@ local function execute_project_commands(project_name, command_type)
     for _, cmd in ipairs(commands) do
         if cmd and cmd ~= "" then
             pcall(vim.cmd, cmd)
+			-- vim.cmd(cmd)
         end
     end
 end
@@ -319,7 +320,7 @@ end
 
 
 -- Создание нового проекта
-local function create_project(name, template, description)
+local function create_project(name, template)
     local project_path = config.projects_dir .. "/" .. name
 
     if vim.fn.isdirectory(project_path) == 1 then
@@ -339,16 +340,6 @@ local function create_project(name, template, description)
     else
         -- Создаем пустую папку
         vim.fn.mkdir(project_path, "p")
-    end
-
-    -- Создаем файл с описанием
-    local desc_file = io.open(project_path .. "/.lumproject", "w")
-    if desc_file then
-        desc_file:write("name=" .. escape_special_chars(name) .. "\n")
-        if description then
-            desc_file:write("description=" .. escape_special_chars(description) .. "\n")
-        end
-        desc_file:close()
     end
 
     return true
@@ -385,16 +376,12 @@ local function prompt_create_project()
         }, function(template)
             if not template then return end
 
-            vim.ui.input({ prompt = "Description (optional): ", default = "" }, function(description)
-                if description == nil then return end -- Пользователь нажал Esc
-
-                local success, err = create_project(name, template, description)
-                if success then
-                    vim.notify("Project created: " .. name, vim.log.levels.INFO)
-                else
-                    vim.notify("Error: " .. err, vim.log.levels.ERROR)
-                end
-            end)
+			local success, err = create_project(name, template)
+			if success then
+				vim.notify("Project created: " .. name, vim.log.levels.INFO)
+			else
+				vim.notify("Error: " .. err, vim.log.levels.ERROR)
+			end
         end)
     end)
 end
