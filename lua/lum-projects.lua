@@ -650,6 +650,8 @@ function M.telescope_projects()
     })
 
     pickers.new({
+		file_ignore_patterns = false,
+		ignore_filename = false,
         prompt_title = "Lum Projects",
         finder = finders.new_table({
             results = projects,
